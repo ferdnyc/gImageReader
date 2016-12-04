@@ -1,7 +1,7 @@
 /* -*- Mode: C++; indent-tabs-mode: t; c-basic-offset: 4; tab-width: 4 -*-  */
 /*
  * Recognizer.hh
- * Copyright (C) 2013-2014 Sandro Mani <manisandro@gmail.com>
+ * Copyright (C) 2013-2016 Sandro Mani <manisandro@gmail.com>
  *
  * gImageReader is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -23,39 +23,48 @@
 #include <QToolButton>
 
 #include "Config.hh"
+#include "Displayer.hh"
 
-namespace tesseract { class TessBaseAPI; }
+namespace tesseract {
+class TessBaseAPI;
+}
 class UI_MainWindow;
 
-class Recognizer : public QObject
-{
+class Recognizer : public QObject {
 	Q_OBJECT
 public:
 	enum class OutputDestination { Buffer, Clipboard };
 
 	Recognizer(const UI_MainWindow& _ui);
-	const Config::Lang& getSelectedLanguage() const{ return m_curLang; }
+	QStringList getAvailableLanguages() const;
+	const Config::Lang& getSelectedLanguage() const {
+		return m_curLang;
+	}
 
 public slots:
-	bool recognizeImage(const QImage& img, OutputDestination dest);
-	void setRecognizeMode(bool haveSelection);
+	bool recognizeImage(const QImage& image, OutputDestination dest);
+	void setRecognizeMode(const QString& mode);
 	void updateLanguagesMenu();
 
 signals:
 	void languageChanged(const Config::Lang& lang);
 
 private:
+	struct ProgressMonitor;
 	enum class PageSelection { Prompt, Current, Multiple };
 	enum class PageArea { EntirePage, Autodetect };
 
 	const UI_MainWindow& ui;
-	QMenu* m_menuPages;
+	QMenu* m_menuPages = nullptr;
+	QMenu* m_menuMultilanguage = nullptr;
 	QDialog* m_pagesDialog;
 	QLineEdit* m_pagesLineEdit;
+	QLabel* m_pageAreaLabel;
 	QComboBox* m_pageAreaComboBox;
 	QActionGroup* m_langMenuRadioGroup = nullptr;
 	QActionGroup* m_langMenuCheckGroup = nullptr;
 	QAction* m_multilingualAction = nullptr;
+	QAction* m_osdAction = nullptr;
 	QString m_modeLabel;
 	QString m_langLabel;
 	Config::Lang m_curLang;
@@ -63,16 +72,18 @@ private:
 	bool initTesseract(tesseract::TessBaseAPI& tess, const char* language = nullptr) const;
 	QList<int> selectPages(bool& autodetectLayout);
 	void recognize(const QList<int>& pages, bool autodetectLayout = false);
+	bool eventFilter(QObject *obj, QEvent *ev) override;
 
 private slots:
-	void addText(const QString& text, bool insertText);
 	void clearLineEditPageRangeStyle();
+	void osdToggled(bool state);
 	void recognizeButtonClicked();
 	void recognizeCurrentPage();
 	void recognizeMultiplePages();
 	void setLanguage();
 	void setMultiLanguage();
 	bool setPage(int page, bool autodetectLayout);
+	void manageInstalledLanguages();
 };
 
 #endif // RECOGNIZER_HPP

@@ -1,7 +1,7 @@
 /* -*- Mode: C++; indent-tabs-mode: t; c-basic-offset: 4; tab-width: 4 -*-  */
 /*
  * SubstitutionsManager.hh
- * Copyright (C) 2013-2014 Sandro Mani <manisandro@gmail.com>
+ * Copyright (C) 2013-2016 Sandro Mani <manisandro@gmail.com>
  *
  * gImageReader is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -24,19 +24,20 @@
 
 class QCheckBox;
 class QItemSelection;
-class QPlainTextEdit;
+class OutputTextEdit;
 class QTableWidget;
 
 class SubstitutionsManager : public QDialog {
 	Q_OBJECT
 public:
-	SubstitutionsManager(QPlainTextEdit* textEdit, QCheckBox* csCheckBox, QWidget* parent = nullptr);
+	SubstitutionsManager(OutputTextEdit* textEdit, QCheckBox* csCheckBox, QWidget* parent = nullptr);
+	~SubstitutionsManager();
 
 private:
 	QAction* m_removeAction;
 	QString m_currentFile;
 	QTableWidget* m_tableWidget;
-	QPlainTextEdit* m_textEdit;
+	OutputTextEdit* m_textEdit;
 	QCheckBox* m_csCheckBox;
 
 private slots:

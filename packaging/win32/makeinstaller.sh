@@ -11,17 +11,27 @@ else
     exit 1
 fi
 
-iface=${2:-qt4}
+iface=${2:-qt5}
 
 # Note: This script is written to be used with the Fedora mingw environment
 MINGWROOT=/usr/$arch-w64-mingw32/sys-root/mingw
+
+optflags="-g -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions --param=ssp-buffer-size=4"
 
 # Halt on errors
 set -e
 
 if [ "$3" == "debug" ]; then
     withdebug=1
+    optflags+=" -O0"
+else
+    optflags+=" -O2"
 fi
+
+export MINGW32_CFLAGS="$optflags"
+export MINGW32_CXXFLAGS="$optflags"
+export MINGW64_CFLAGS="$optflags"
+export MINGW64_CXXFLAGS="$optflags"
 
 win32dir="$(dirname $(readlink -f $0))"
 srcdir="$win32dir/../../"
@@ -33,7 +43,7 @@ rm -rf $builddir
 mkdir -p $builddir
 pushd $builddir > /dev/null
 mingw$bits-cmake -DINTERFACE_TYPE=$iface ../../
-mingw$bits-make -j4 DESTDIR="${installroot}_" install
+mingw$bits-make -j4 DESTDIR="${installroot}_" install VERBOSE=1
 mv ${installroot}_$MINGWROOT $installroot
 rm -rf ${installroot}_
 cp $win32dir/gimagereader-icon.rc $builddir
@@ -84,21 +94,10 @@ if [ "$iface" == "gtk" ]; then
 
     linkDep bin/gspawn-win$bits-helper-console.exe
     linkDep bin/gspawn-win$bits-helper.exe
-    linkDep lib/pango/1.8.0/modules/pango-arabic-lang.dll
-    linkDep lib/pango/1.8.0/modules/pango-indic-lang.dll
-    linkDep lib/pango/1.8.0/modules/pango-basic-fc.dll
-    linkDep lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-pcx.dll
-    linkDep lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-xbm.dll
-    linkDep lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-ani.dll
-    linkDep lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-wbmp.dll
-    linkDep lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-pnm.dll
-    linkDep lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-icns.dll
-    linkDep lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-tga.dll
-    linkDep lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-jasper.dll
-    linkDep lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-qtif.dll
-    linkDep lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-xpm.dll
-    linkDep lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-ras.dll
-    
+    for loader in $(ls -1 $MINGWROOT/lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-*.dll); do
+      linkDep $(echo $loader | sed "s|^$MINGWROOT/||")
+    done
+
     # Install locale files
     (
         cd $MINGWROOT
@@ -116,6 +115,8 @@ if [ "$iface" == "gtk" ]; then
 
 elif [ "$iface" == "qt4" ]; then
 
+    linkDep $(ls $MINGWROOT/bin/libssl-*.dll | sed "s|^$MINGWROOT/||")
+    linkDep $(ls $MINGWROOT/bin/libcrypto-*.dll | sed "s|^$MINGWROOT/||")
     linkDep lib/qt4/plugins/imageformats/qgif4.dll  bin/imageformats
     linkDep lib/qt4/plugins/imageformats/qico4.dll  bin/imageformats
     linkDep lib/qt4/plugins/imageformats/qmng4.dll  bin/imageformats
@@ -130,13 +131,14 @@ elif [ "$iface" == "qt4" ]; then
 
 elif [ "$iface" == "qt5" ]; then
 
+    linkDep $(ls $MINGWROOT/bin/libssl-*.dll | sed "s|^$MINGWROOT/||")
+    linkDep $(ls $MINGWROOT/bin/libcrypto-*.dll | sed "s|^$MINGWROOT/||")
     linkDep lib/qt5/plugins/imageformats/qdds.dll  bin/imageformats
     linkDep lib/qt5/plugins/imageformats/qgif.dll  bin/imageformats
     linkDep lib/qt5/plugins/imageformats/qicns.dll bin/imageformats
     linkDep lib/qt5/plugins/imageformats/qico.dll  bin/imageformats
     linkDep lib/qt5/plugins/imageformats/qjp2.dll  bin/imageformats
     linkDep lib/qt5/plugins/imageformats/qjpeg.dll bin/imageformats
-    linkDep lib/qt5/plugins/imageformats/qmng.dll  bin/imageformats
     linkDep lib/qt5/plugins/imageformats/qtga.dll  bin/imageformats
     linkDep lib/qt5/plugins/imageformats/qtiff.dll bin/imageformats
     linkDep lib/qt5/plugins/imageformats/qwbmp.dll bin/imageformats
@@ -145,7 +147,8 @@ elif [ "$iface" == "qt5" ]; then
 
     # Install locale files
     mkdir -p $installroot/share/qt5/translations/
-    cp -a $MINGWROOT/share/qt5/translations/{qt_*.qm,QtSpell_*.qm}  $installroot/share/qt5/translations
+    cp -a $MINGWROOT/share/qt5/translations/{qt_*.qm,qtbase_*.qm,QtSpell_*.qm}  $installroot/share/qt5/translations
+    rm -f $installroot/share/qt5/translations/qt_help_*.qm
 
 fi
 
@@ -174,7 +177,7 @@ rm -rf $installroot/share/appdata
 progName=$(grep -oP 'SET\(PACKAGE_NAME \K(\w+)(?=\))' $srcdir/CMakeLists.txt)
 progVersion=$(grep -oP 'SET\(PACKAGE_VERSION \K([\d\.]+)(?=\))' $srcdir/CMakeLists.txt)
 if [ $withdebug ]; then
-    iface="${iface}_debug"
+    arch="${arch}_debug"
 fi
 makensis -DNAME=$progName -DARCH=$arch -DPROGVERSION="$progVersion" -DIFACE="$iface" installer.nsi;
 

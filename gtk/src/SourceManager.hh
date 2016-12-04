@@ -1,7 +1,7 @@
 /* -*- Mode: C++; indent-tabs-mode: t; c-basic-offset: 4; tab-width: 4 -*-  */
 /*
  * SourceManager.hh
- * Copyright (C) 2013-2014 Sandro Mani <manisandro@gmail.com>
+ * Copyright (C) 2013-2016 Sandro Mani <manisandro@gmail.com>
  *
  * gImageReader is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -34,7 +34,7 @@ struct Source {
 	int contrast = 0;
 	int resolution = -1;
 	int page = 1;
-	double angle = 0.;
+	std::vector<double> angle;
 	bool invert = false;
 };
 
@@ -44,8 +44,10 @@ public:
 	~SourceManager();
 
 	void addSources(const std::vector<Glib::RefPtr<Gio::File>>& files);
-	Source* getSelectedSource() const;
-	sigc::signal<void,Source*> signal_sourceChanged(){ return m_signal_sourceChanged; }
+	std::vector<Source*> getSelectedSources() const;
+	sigc::signal<void> signal_sourceChanged() {
+		return m_signal_sourceChanged;
+	}
 
 private:
 	class ListViewColumns : public Gtk::TreeModel::ColumnRecord {
@@ -53,22 +55,27 @@ private:
 		Gtk::TreeModelColumn<std::string> filename;
 		Gtk::TreeModelColumn<Source*> source;
 		Gtk::TreeModelColumn<std::string> path;
-		ListViewColumns(){ add(filename); add(source); add(path); }
+		ListViewColumns() {
+			add(filename);
+			add(source);
+			add(path);
+		}
 	};
 
 	Gtk::Notebook* m_notebook;
 	Gtk::TreeView* m_listView;
-	Gtk::MenuToolButton* m_addButton;
-	Gtk::ToolButton* m_removeButton;
-	Gtk::ToolButton* m_deleteButton;
-	Gtk::ToolButton* m_clearButton;
+	Gtk::Button* m_addButton;
+	Gtk::MenuButton* m_addButtonMenu;
+	Gtk::Button* m_removeButton;
+	Gtk::Button* m_deleteButton;
+	Gtk::Button* m_clearButton;
 	Gtk::MenuItem* m_pasteItem;
 
 	Glib::RefPtr<Gtk::Clipboard> m_clipboard;
 	ListViewColumns m_listViewCols;
 	int m_screenshotCount = 0;
 	int m_pasteCount = 0;
-	sigc::signal<void,Source*> m_signal_sourceChanged;
+	sigc::signal<void> m_signal_sourceChanged;
 	sigc::connection m_connectionSelectionChanged;
 
 	void clearSources();

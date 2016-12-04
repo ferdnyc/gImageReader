@@ -1,7 +1,7 @@
 /* -*- Mode: C++; indent-tabs-mode: t; c-basic-offset: 4; tab-width: 4 -*-  */
 /*
  * Displayer.cc
- * Copyright (C) 2013-2014 Sandro Mani <manisandro@gmail.com>
+ * Copyright (C) 2013-2016 Sandro Mani <manisandro@gmail.com>
  *
  * gImageReader is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -18,28 +18,47 @@
  */
 
 #include "MainWindow.hh"
+#include "Config.hh"
 #include "Displayer.hh"
 #include "DisplayRenderer.hh"
-#include "DisplaySelection.hh"
 #include "SourceManager.hh"
 #include "Utils.hh"
 
 #include <QFileDialog>
 #include <QGraphicsPixmapItem>
+#include <QGraphicsSceneDragDropEvent>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QScrollBar>
 #include <QWheelEvent>
-#include <tesseract/baseapi.h>
-#include <cassert>
 
+
+class GraphicsScene : public QGraphicsScene {
+public:
+	using QGraphicsScene::QGraphicsScene;
+
+protected:
+	void dragEnterEvent(QGraphicsSceneDragDropEvent *event) {
+		if(Utils::handleSourceDragEvent(event->mimeData())) {
+			event->acceptProposedAction();
+		}
+	}
+	void dragMoveEvent(QGraphicsSceneDragDropEvent *event) {}
+	void dropEvent(QGraphicsSceneDragDropEvent *event) {
+		Utils::handleSourceDropEvent(event->mimeData());
+	}
+};
 
 Displayer::Displayer(const UI_MainWindow& _ui, QWidget* parent)
-	: QGraphicsView(parent), ui(_ui), m_scaleThread(std::bind(&Displayer::scaleThread, this))
-{
-	setScene(&m_scene);
+	: QGraphicsView(parent), ui(_ui), m_scaleThread(std::bind(&Displayer::scaleThread, this)) {
+	m_scene = new GraphicsScene();
+	setScene(m_scene);
 	setBackgroundBrush(Qt::gray);
 	setRenderHint(QPainter::Antialiasing);
+
+	m_rotateMode = RotateMode::AllPages;
+	ui.actionRotateCurrentPage->setData(static_cast<int>(RotateMode::CurrentPage));
+	ui.actionRotateAllPages->setData(static_cast<int>(RotateMode::AllPages));
 
 	m_renderTimer.setSingleShot(true);
 	m_scaleTimer.setSingleShot(true);
@@ -47,11 +66,11 @@ Displayer::Displayer(const UI_MainWindow& _ui, QWidget* parent)
 	ui.actionRotateLeft->setData(270.);
 	ui.actionRotateRight->setData(90.);
 
+	connect(ui.menuRotation, SIGNAL(triggered(QAction*)), this, SLOT(setRotateMode(QAction*)));
 	connect(ui.actionRotateLeft, SIGNAL(triggered()), this, SLOT(rotate90()));
 	connect(ui.actionRotateRight, SIGNAL(triggered()), this, SLOT(rotate90()));
-	connect(ui.actionAutodetectLayout, SIGNAL(triggered()), this, SLOT(autodetectLayout()));
-	connect(ui.spinBoxRotation, SIGNAL(valueChanged(double)), this, SLOT(setRotation(double)));
-	connect(ui.spinBoxPage, SIGNAL(valueChanged(int)), this, SLOT(queueRenderImage()));
+	connect(ui.spinBoxRotation, SIGNAL(valueChanged(double)), this, SLOT(setAngle(double)));
+	connect(ui.spinBoxPage, SIGNAL(valueChanged(int)), this, SLOT(setCurrentPage(int)));
 	connect(ui.spinBoxBrightness, SIGNAL(valueChanged(int)), this, SLOT(queueRenderImage()));
 	connect(ui.spinBoxContrast, SIGNAL(valueChanged(int)), this, SLOT(queueRenderImage()));
 	connect(ui.spinBoxResolution, SIGNAL(valueChanged(int)), this, SLOT(queueRenderImage()));
@@ -62,43 +81,94 @@ Displayer::Displayer(const UI_MainWindow& _ui, QWidget* parent)
 	connect(ui.actionOriginalSize, SIGNAL(triggered()), this, SLOT(zoomOriginal()));
 	connect(&m_renderTimer, SIGNAL(timeout()), this, SLOT(renderImage()));
 	connect(&m_scaleTimer, SIGNAL(timeout()), this, SLOT(scaleTimerElapsed()));
-
-	MAIN->getConfig()->addSetting(new VarSetting<QString>("selectionsavefile", QDir(Utils::documentsFolder()).absoluteFilePath(_("selection.png"))));
 }
 
-bool Displayer::setCurrentPage(int page)
-{
+Displayer::~Displayer() {
+	setSources(QList<Source*>());
+	delete m_scene;
+}
+
+bool Displayer::setCurrentPage(int page) {
+	ui.spinBoxPage->setEnabled(false);
+	if(m_sources.isEmpty()) {
+		return false;
+	}
+	if(m_tool) {
+		m_tool->pageChanged();
+	}
+	Source* source = m_pageMap[page].first;
+	if(source != m_currentSource) {
+		delete m_renderer;
+		if(source->path.endsWith(".pdf", Qt::CaseInsensitive)) {
+			m_renderer = new PDFRenderer(source->path);
+			if(source->resolution == -1) source->resolution = 300;
+		} else {
+			m_renderer = new ImageRenderer(source->path);
+			if(source->resolution == -1) source->resolution = 100;
+		}
+
+		Utils::setSpinBlocked(ui.spinBoxBrightness, source->brightness);
+		Utils::setSpinBlocked(ui.spinBoxContrast, source->contrast);
+		Utils::setSpinBlocked(ui.spinBoxResolution, source->resolution);
+		ui.checkBoxInvertColors->blockSignals(true);
+		ui.checkBoxInvertColors->setChecked(source->invert);
+		ui.checkBoxInvertColors->blockSignals(false);
+		m_currentSource = source;
+	}
+	Utils::setSpinBlocked(ui.spinBoxRotation, source->angle[m_pageMap[page].second]);
 	Utils::setSpinBlocked(ui.spinBoxPage, page);
-	return renderImage();
+
+	bool result = renderImage();
+	ui.spinBoxPage->setEnabled(true);
+	return result;
 }
 
-int Displayer::getCurrentPage() const
-{
+int Displayer::getCurrentPage() const {
 	return ui.spinBoxPage->value();
 }
 
-int Displayer::getNPages() const
-{
+double Displayer::getCurrentAngle() const {
+	return ui.spinBoxRotation->value();
+}
+
+int Displayer::getCurrentResolution() const {
+	return ui.spinBoxResolution->value();
+}
+
+QString Displayer::getCurrentImage(int& page) const {
+	page = m_pageMap[ui.spinBoxPage->value()].second;
+	return m_pageMap[ui.spinBoxPage->value()].first ? m_pageMap[ui.spinBoxPage->value()].first->path : "";
+}
+
+int Displayer::getNPages() const {
 	return ui.spinBoxPage->maximum();
 }
 
-bool Displayer::setSource(Source* source)
-{
+bool Displayer::setSources(QList<Source*> sources) {
+	if(sources == m_sources) {
+		return true;
+	}
+
 	m_scaleTimer.stop();
-	if(m_scaleThread.isRunning()){
+	if(m_scaleThread.isRunning()) {
 		sendScaleRequest({ScaleRequest::Quit});
 		m_scaleThread.wait();
 	}
-	clearSelections();
+	if(m_tool) {
+		m_tool->reset();
+	}
 	m_renderTimer.stop();
-	m_scene.clear();
+	m_scene->clear();
 	delete m_renderer;
 	m_renderer = nullptr;
+	m_currentSource = nullptr;
+	m_sources.clear();
+	m_pageMap.clear();
 	m_pixmap = QPixmap();
 	m_imageItem = nullptr;
 	ui.actionBestFit->setChecked(true);
 	ui.spinBoxPage->setEnabled(false);
-	ui.spinBoxPage->setValue(1);
+	ui.spinBoxPage->setRange(1, 1);
 	ui.spinBoxRotation->setValue(0.);
 	ui.spinBoxBrightness->setValue(0);
 	ui.spinBoxContrast->setValue(0);
@@ -112,96 +182,110 @@ bool Displayer::setSource(Source* source)
 	setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 	unsetCursor();
 
-	m_source = source;
+	m_sources = sources;
 
-	if(!m_source){
+	if(m_sources.isEmpty()) {
 		return false;
 	}
 
-	if(source->path.endsWith(".pdf", Qt::CaseInsensitive)){
-		m_renderer = new PDFRenderer(source->path);
-		if(source->resolution == -1) source->resolution = 300;
-	}else{
-		m_renderer = new ImageRenderer(source->path);
-		if(source->resolution == -1) source->resolution = 100;
+	int page = 0;
+	for(Source* source : m_sources) {
+		if(source->path.endsWith(".pdf", Qt::CaseInsensitive)) {
+			PDFRenderer r(source->path);
+			source->angle.resize(r.getNPages());
+			for(int pdfPage = 1, nPdfPages = r.getNPages(); pdfPage <= nPdfPages; ++pdfPage) {
+				m_pageMap.insert(++page, qMakePair(source, pdfPage));
+			}
+		} else {
+			m_pageMap.insert(++page, qMakePair(source, 1));
+			source->angle.resize(1);
+		}
 	}
-	ui.spinBoxPage->setMaximum(m_renderer->getNPages());
-	ui.actionPage->setVisible(m_renderer->getNPages() > 1);
-	Utils::setSpinBlocked(ui.spinBoxRotation, source->angle);
-	Utils::setSpinBlocked(ui.spinBoxPage, source->page);
-	Utils::setSpinBlocked(ui.spinBoxBrightness, source->brightness);
-	Utils::setSpinBlocked(ui.spinBoxContrast, source->contrast);
-	Utils::setSpinBlocked(ui.spinBoxResolution, source->resolution);
-	ui.checkBoxInvertColors->blockSignals(true);
-	ui.checkBoxInvertColors->setChecked(source->invert);
-	ui.checkBoxInvertColors->blockSignals(false);
-	setCursor(Qt::CrossCursor);
 
+	ui.spinBoxPage->setMaximum(page);
+	ui.actionPage->setVisible(page > 1);
+	setCursor(Qt::CrossCursor);
 	m_imageItem = new QGraphicsPixmapItem();
 	m_imageItem->setTransformationMode(Qt::SmoothTransformation);
-	m_scene.addItem(m_imageItem);
+	m_scene->addItem(m_imageItem);
 	m_scaleThread.start();
-	if(!renderImage()){
-		setSource(nullptr);
-		QMessageBox::critical(this, _("Failed to load image"), _("The file might not be an image or be corrupt:\n%1").arg(source->path));
+	if(!setCurrentPage(1)) {
+		Q_ASSERT(m_currentSource);
+		QMessageBox::critical(this, _("Failed to load image"), _("The file might not be an image or be corrupt:\n%1").arg(m_currentSource->displayname));
+		setSources(QList<Source*>());
 		return false;
 	}
 	return true;
 }
 
-bool Displayer::renderImage()
-{
+bool Displayer::hasMultipleOCRAreas() {
+	return m_tool->hasMultipleOCRAreas();
+}
+
+QList<QImage> Displayer::getOCRAreas() {
+	return m_tool->getOCRAreas();
+}
+
+bool Displayer::allowAutodetectOCRAreas() const {
+	return m_tool->allowAutodetectOCRAreas();
+}
+
+void Displayer::autodetectOCRAreas() {
+	m_tool->autodetectOCRAreas();
+}
+
+bool Displayer::renderImage() {
 	sendScaleRequest({ScaleRequest::Abort});
-	if(m_source->resolution != ui.spinBoxResolution->value()){
-		double factor = double(ui.spinBoxResolution->value()) / double(m_source->resolution);
-		for(DisplaySelection* sel : m_selections){
-			sel->scale(factor);
+	if(m_currentSource->resolution != ui.spinBoxResolution->value()) {
+		double factor = double(ui.spinBoxResolution->value()) / double(m_currentSource->resolution);
+		if(m_tool) {
+			m_tool->resolutionChanged(factor);
 		}
 	}
-	m_source->page = ui.spinBoxPage->value();
-	m_source->brightness = ui.spinBoxBrightness->value();
-	m_source->contrast = ui.spinBoxContrast->value();
-	m_source->resolution = ui.spinBoxResolution->value();
-	m_source->invert = ui.checkBoxInvertColors->isChecked();
-	QImage image = m_renderer->render(m_source->page, m_source->resolution);
-	if(image.isNull()){
+	m_currentSource->page = m_pageMap[ui.spinBoxPage->value()].second;
+	m_currentSource->brightness = ui.spinBoxBrightness->value();
+	m_currentSource->contrast = ui.spinBoxContrast->value();
+	m_currentSource->resolution = ui.spinBoxResolution->value();
+	m_currentSource->invert = ui.checkBoxInvertColors->isChecked();
+	QImage image = m_renderer->render(m_currentSource->page, m_currentSource->resolution);
+	if(image.isNull()) {
 		return false;
 	}
-	m_renderer->adjustImage(image, m_source->brightness, m_source->contrast, m_source->invert);
+	m_renderer->adjustImage(image, m_currentSource->brightness, m_currentSource->contrast, m_currentSource->invert);
 	m_pixmap = QPixmap::fromImage(image);
 	m_imageItem->setPixmap(m_pixmap);
 	m_imageItem->setScale(1.);
 	m_imageItem->setTransformOriginPoint(m_imageItem->boundingRect().center());
 	m_imageItem->setPos(m_imageItem->pos() - m_imageItem->sceneBoundingRect().center());
-	m_scene.setSceneRect(m_imageItem->sceneBoundingRect());
+	m_scene->setSceneRect(m_imageItem->sceneBoundingRect());
 	centerOn(sceneRect().center());
-	setRotation(ui.spinBoxRotation->value());
-	if(m_scale < 1.0){
-		m_pendingScaleRequest = {ScaleRequest::Scale, m_scale, m_source->resolution, m_source->page, m_source->brightness, m_source->contrast, m_source->invert};
+	setAngle(ui.spinBoxRotation->value());
+	if(m_scale < 1.0) {
+		m_pendingScaleRequest = {ScaleRequest::Scale, m_scale, m_currentSource->resolution, m_currentSource->page, m_currentSource->brightness, m_currentSource->contrast, m_currentSource->invert};
 		m_scaleTimer.start(100);
 	}
 	return true;
 }
 
-void Displayer::setZoom(Zoom action, ViewportAnchor anchor)
-{
-	if(!m_imageItem){
+void Displayer::setZoom(Zoom action, ViewportAnchor anchor) {
+	if(!m_imageItem) {
 		return;
 	}
 	sendScaleRequest({ScaleRequest::Abort});
+	setUpdatesEnabled(false);
 
 	QRectF bb = m_imageItem->sceneBoundingRect();
 	double fit = qMin(viewport()->width() / bb.width(), viewport()->height() / bb.height());
 
-	if(action == Zoom::Original){
+	if(action == Zoom::Original) {
 		m_scale = 1.0;
-	}else if(action == Zoom::In){
+	} else if(action == Zoom::In) {
 		m_scale = qMin(10., m_scale * 1.25);
-	}else if(action == Zoom::Out){
+	} else if(action == Zoom::Out) {
 		m_scale = qMax(0.05, m_scale * 0.8);
 	}
 	ui.actionBestFit->setChecked(false);
-	if(action == Zoom::Fit || (m_scale / fit >= 0.9 && m_scale / fit <= 1.09)){
+	if(action == Zoom::Fit || (m_scale / fit >= 0.9 && m_scale / fit <= 1.09)) {
 		m_scale = fit;
 		ui.actionBestFit->setChecked(true);
 	}
@@ -215,115 +299,130 @@ void Displayer::setZoom(Zoom action, ViewportAnchor anchor)
 	QTransform t;
 	t.scale(m_scale, m_scale);
 	setTransform(t);
-	if(m_scale < 1.0){
-		m_pendingScaleRequest = {ScaleRequest::Scale, m_scale, m_source->resolution, m_source->page, m_source->brightness, m_source->contrast, m_source->invert};
+	if(m_scale < 1.0) {
+		m_pendingScaleRequest = {ScaleRequest::Scale, m_scale, m_currentSource->resolution, m_currentSource->page, m_currentSource->brightness, m_currentSource->contrast, m_currentSource->invert};
 		m_scaleTimer.start(100);
-	}else{
+	} else {
 		m_imageItem->setPixmap(m_pixmap);
 		m_imageItem->setScale(1.);
 		m_imageItem->setTransformOriginPoint(m_imageItem->boundingRect().center());
 		m_imageItem->setPos(m_imageItem->pos() - m_imageItem->sceneBoundingRect().center());
 	}
+	setUpdatesEnabled(true);
+	update();
 }
 
-void Displayer::setRotation(double angle)
-{
-	if(m_imageItem){
+void Displayer::setAngle(double angle) {
+	if(m_imageItem) {
 		angle = angle < 0 ? angle + 360. : angle >= 360 ? angle - 360 : angle,
 		Utils::setSpinBlocked(ui.spinBoxRotation, angle);
-		double delta = angle - m_source->angle;
-		m_source->angle = angle;
-		m_imageItem->setRotation(angle);
-		QTransform t;
-		t.rotate(delta);
-		for(DisplaySelection* sel : m_selections){
-			sel->rotate(t);
+		int sourcePage = m_pageMap[getCurrentPage()].second;
+		double delta = angle - m_currentSource->angle[sourcePage];
+		if(m_rotateMode == RotateMode::CurrentPage) {
+			m_currentSource->angle[sourcePage] = angle;
+		} else if(delta != 0) {
+			for(int page : m_pageMap.keys()) {
+				auto pair = m_pageMap[page];
+				pair.first->angle[pair.second] += delta;
+			}
 		}
-		m_scene.setSceneRect(m_imageItem->sceneBoundingRect());
-		if(ui.actionBestFit->isChecked()){
+		m_imageItem->setRotation(angle);
+		if(m_tool) {
+			m_tool->rotationChanged(delta);
+		}
+		m_scene->setSceneRect(m_imageItem->sceneBoundingRect());
+		if(ui.actionBestFit->isChecked()) {
 			setZoom(Zoom::Fit);
 		}
 	}
 }
 
-void Displayer::queueRenderImage()
-{
-	if(m_renderer){
+void Displayer::setResolution(int resolution) {
+	ui.spinBoxResolution->blockSignals(true);
+	ui.spinBoxResolution->setValue(resolution);
+	ui.spinBoxResolution->blockSignals(false);
+	renderImage();
+}
+
+void Displayer::queueRenderImage() {
+	if(m_renderer) {
 		m_renderTimer.start(500);
 	}
 }
 
-void Displayer::resizeEvent(QResizeEvent *event)
-{
+void Displayer::resizeEvent(QResizeEvent *event) {
 	QGraphicsView::resizeEvent(event);
-	if(ui.actionBestFit->isChecked()){
+	if(ui.actionBestFit->isChecked()) {
 		setZoom(Zoom::Fit);
 	}
 }
 
-void Displayer::mousePressEvent(QMouseEvent *event)
+void Displayer::keyPressEvent(QKeyEvent *event)
 {
-	event->ignore();
-	QGraphicsView::mousePressEvent(event);
-	if(!event->isAccepted() && event->button() == Qt::LeftButton && m_source && m_curSel == nullptr){
-		if((event->modifiers() & Qt::ControlModifier) == 0){
-			clearSelections();
+	if(event->key() == Qt::Key_PageUp) {
+		ui.spinBoxPage->setValue(ui.spinBoxPage->value() - 1);
+		event->accept();
+	} else if(event->key() == Qt::Key_PageDown) {
+		ui.spinBoxPage->setValue(ui.spinBoxPage->value() + 1);
+		event->accept();
+	} else {
+		QGraphicsView::keyPressEvent(event);
+	}
+}
+
+void Displayer::mousePressEvent(QMouseEvent *event) {
+	if(event->button() == Qt::MiddleButton) {
+		m_panPos = event->pos();
+	} else {
+		event->ignore();
+		QGraphicsView::mousePressEvent(event);
+		if(!event->isAccepted() && m_tool && m_currentSource) {
+			m_tool->mousePressEvent(event);
 		}
-		m_curSel = new DisplaySelection(this, 1 + m_selections.size(), mapToSceneClamped(event->pos()));
-		m_curSel->setZValue(1 + m_selections.size());
-		m_scene.addItem(m_curSel);
-		event->accept();
 	}
 }
 
-void Displayer::mouseMoveEvent(QMouseEvent *event)
-{
-	event->ignore();
-	QGraphicsView::mouseMoveEvent(event);
-	if(!event->isAccepted() && m_curSel){
-		QPointF p = mapToSceneClamped(event->pos());
-		m_curSel->setPoint(p);
-		ensureVisible(QRectF(p, p));
-		event->accept();
+void Displayer::mouseMoveEvent(QMouseEvent *event) {
+	if((event->buttons() & Qt::MiddleButton) == Qt::MiddleButton) {
+		QPoint delta = event->pos() - m_panPos;
+		horizontalScrollBar()->setValue( horizontalScrollBar()->value() - delta.x() );
+		verticalScrollBar()->setValue( verticalScrollBar()->value() - delta.y() );
+		m_panPos = event->pos();
+	} else {
+		event->ignore();
+		QGraphicsView::mouseMoveEvent(event);
+		if(!event->isAccepted() && m_tool && m_currentSource) {
+			m_tool->mouseMoveEvent(event);
+		}
 	}
 }
 
-void Displayer::mouseReleaseEvent(QMouseEvent *event)
-{
+void Displayer::mouseReleaseEvent(QMouseEvent *event) {
 	event->ignore();
 	QGraphicsView::mouseReleaseEvent(event);
-	if(!event->isAccepted() && m_curSel){
-		if(m_curSel->rect().width() < 5. || m_curSel->rect().height() < 5.){
-			delete m_curSel;
-		}else{
-			m_selections.append(m_curSel);
-			emit selectionChanged(true);
-		}
-		m_curSel = nullptr;
-		event->accept();
+	if(!event->isAccepted() && m_tool && m_currentSource) {
+		m_tool->mouseReleaseEvent(event);
 	}
 }
 
-void Displayer::wheelEvent(QWheelEvent *event)
-{
-	if(event->modifiers() & Qt::ControlModifier){
+void Displayer::wheelEvent(QWheelEvent *event) {
+	if(event->modifiers() & Qt::ControlModifier) {
 		setZoom(event->delta() > 0 ? Zoom::In : Zoom::Out, QGraphicsView::AnchorUnderMouse);
 		event->accept();
-	}else if(event->modifiers() & Qt::ShiftModifier){
+	} else if(event->modifiers() & Qt::ShiftModifier) {
 		QScrollBar* hscroll = horizontalScrollBar();
-		if(event->delta() < 0){
+		if(event->delta() < 0) {
 			hscroll->setValue(hscroll->value() + hscroll->singleStep());
-		}else{
+		} else {
 			hscroll->setValue(hscroll->value() - hscroll->singleStep());
 		}
 		event->accept();
-	}else{
+	} else {
 		QGraphicsView::wheelEvent(event);
 	}
 }
 
-QPointF Displayer::mapToSceneClamped(const QPoint &p) const
-{
+QPointF Displayer::mapToSceneClamped(const QPoint &p) const {
 	QPointF q = mapToScene(p);
 	QRectF bb = m_imageItem->sceneBoundingRect();
 	q.rx() = qMin(qMax(bb.x(), q.x()), bb.x() + bb.width());
@@ -331,71 +430,21 @@ QPointF Displayer::mapToSceneClamped(const QPoint &p) const
 	return q;
 }
 
-void Displayer::rotate90()
-{
+void Displayer::setRotateMode(QAction *action) {
+	m_rotateMode = static_cast<RotateMode>(action->data().value<int>());
+	ui.toolButtonRotation->setIcon(action->icon());
+}
+
+void Displayer::rotate90() {
 	double angle = ui.spinBoxRotation->value() + qobject_cast<QAction*>(QObject::sender())->data().toDouble();
 	ui.spinBoxRotation->setValue(angle >= 360. ? angle - 360. : angle);
 }
 
-void Displayer::clearSelections()
-{
-	qDeleteAll(m_selections);
-	m_selections.clear();
-	emit selectionChanged(false);
-}
-
-void Displayer::removeSelection(int num)
-{
-	delete m_selections[num - 1];
-	m_selections.removeAt(num - 1);
-	for(int i = 0, n = m_selections.size(); i < n; ++i){
-		m_selections[i]->setNumber(1 + i);
-		m_selections[i]->setZValue(1 + i);
-		m_scene.invalidate(m_selections[i]->rect());
-	}
-}
-
-void Displayer::reorderSelection(int oldNum, int newNum)
-{
-	DisplaySelection* sel = m_selections[oldNum - 1];
-	m_selections.removeAt(oldNum - 1);
-	m_selections.insert(newNum - 1, sel);
-	for(int i = 0, n = m_selections.size(); i < n; ++i){
-		m_selections[i]->setNumber(1 + i);
-		m_selections[i]->setZValue(1 + i);
-		m_scene.invalidate(m_selections[i]->rect());
-	}
-}
-
-QList<QImage> Displayer::getSelections()
-{
-	QList<QImage> images;
-	if(m_selections.empty()){
-		images.append(getImage(m_imageItem->sceneBoundingRect()));
-	}else{
-		for(const DisplaySelection* sel : m_selections){
-			images.append(getImage(sel->rect()));
-		}
-	}
-	return images;
-}
-
-void Displayer::saveSelection(DisplaySelection *selection)
-{
-	QImage img = getImage(selection->rect());
-	QString filename = Utils::makeOutputFilename(MAIN->getConfig()->getSetting<VarSetting<QString>>("selectionsavefile")->getValue());
-	filename = QFileDialog::getSaveFileName(MAIN, _("Save Selection Image"), filename, QString("%1 (*.png)").arg(_("PNG Images")));
-	if(!filename.isEmpty()){
-		MAIN->getConfig()->getSetting<VarSetting<QString>>("selectionsavefile")->setValue(filename);
-		img.save(filename);
-	}
-}
-
-QImage Displayer::getImage(const QRectF& rect)
-{
+QImage Displayer::getImage(const QRectF& rect) {
 	QImage image(rect.width(), rect.height(), QImage::Format_RGB32);
 	image.fill(Qt::black);
 	QPainter painter(&image);
+	painter.setRenderHint(QPainter::SmoothPixmapTransform);
 	QTransform t;
 	t.translate(-rect.x(), -rect.y());
 	t.rotate(ui.spinBoxRotation->value());
@@ -405,93 +454,41 @@ QImage Displayer::getImage(const QRectF& rect)
 	return image;
 }
 
-void Displayer::autodetectLayout(bool rotated)
-{
-	clearSelections();
-
-	double avgDeskew = 0.;
-	int nDeskew = 0;
-	QList<QRectF> rects;
-	QImage img = getImage(m_imageItem->sceneBoundingRect());
-
-	// Perform layout analysis
-	Utils::busyTask([this,&nDeskew,&avgDeskew,&rects,&img]{
-		tesseract::TessBaseAPI tess;
-		tess.InitForAnalysePage();
-		tess.SetPageSegMode(tesseract::PSM_AUTO_ONLY);
-		tess.SetImage(img.bits(), img.width(), img.height(), 4, img.bytesPerLine());
-		tesseract::PageIterator* it = tess.AnalyseLayout();
-		if(it && !it->Empty(tesseract::RIL_BLOCK)){
-			do{
-				int x1, y1, x2, y2;
-				tesseract::Orientation orient;
-				tesseract::WritingDirection wdir;
-				tesseract::TextlineOrder tlo;
-				float deskew;
-				it->BoundingBox(tesseract::RIL_BLOCK, &x1, &y1, &x2, &y2);
-				it->Orientation(&orient, &wdir, &tlo, &deskew);
-				avgDeskew += deskew;
-				++nDeskew;
-				float width = x2 - x1, height = y2 - y1;
-				if(width > 10 && height > 10){
-					rects.append(QRectF(x1 - 0.5 * img.width(), y1 - 0.5 * img.height(), width, height));
-				}
-			}while(it->Next(tesseract::RIL_BLOCK));
-		}
-		delete it;
-		return true;
-	}, _("Performing layout analysis"));
-
-	// If a somewhat large deskew angle is detected, automatically rotate image and redetect layout,
-	// unless we already attempted to rotate (to prevent endless loops)
-	avgDeskew = qRound(((avgDeskew/nDeskew)/M_PI * 180.) * 10.) / 10.;
-	if(qAbs(avgDeskew > .1) && !rotated){
-		setRotation(ui.spinBoxRotation->value() - avgDeskew);
-		autodetectLayout(true);
-	}else{
-		// Merge overlapping rectangles
-		for(int i = rects.size(); i-- > 1;) {
-			for(int j = i; j-- > 0;) {
-				if(rects[j].intersects(rects[i])) {
-					rects[j] = rects[j].united(rects[i]);
-					rects.removeAt(i);
-					break;
-				}
-			}
-		}
-		for(int i = 0, n = rects.size(); i < n; ++i){
-			m_selections.append(new DisplaySelection(this, 1 + i, rects[i].topLeft()));
-			m_selections.back()->setPoint(rects[i].bottomRight());
-			m_scene.addItem(m_selections.back());
-		}
-		emit selectionChanged(true);
-	}
+QRectF Displayer::getSceneBoundingRect() const {
+	// We cannot use m_imageItem->sceneBoundingRect() since its pixmap
+	// can currently be downscaled and therefore have slightly different
+	// proportions.
+	int width = m_pixmap.width();
+	int height = m_pixmap.height();
+	QRectF rect(width * -0.5, height * -0.5, width, height);
+	QTransform transform;
+	transform.rotate(ui.spinBoxRotation->value());
+	return transform.mapRect(rect);
 }
 
-void Displayer::sendScaleRequest(const ScaleRequest& request)
-{
+void Displayer::sendScaleRequest(const ScaleRequest& request) {
+	m_scaleTimer.stop();
 	m_scaleMutex.lock();
 	m_scaleRequests.append(request);
 	m_scaleCond.wakeOne();
 	m_scaleMutex.unlock();
 }
 
-void Displayer::scaleThread()
-{
+void Displayer::scaleThread() {
 	m_scaleMutex.lock();
-	while(true){
-		while(m_scaleRequests.isEmpty()){
+	while(true) {
+		while(m_scaleRequests.isEmpty()) {
 			m_scaleCond.wait(&m_scaleMutex);
 		}
 		ScaleRequest req = m_scaleRequests.takeFirst();
-		if(req.type == ScaleRequest::Quit){
+		if(req.type == ScaleRequest::Quit) {
 			break;
-		}else if(req.type == ScaleRequest::Scale){
+		} else if(req.type == ScaleRequest::Scale) {
 			m_scaleMutex.unlock();
 			QImage image = m_renderer->render(req.page, req.scale * req.resolution);
 
 			m_scaleMutex.lock();
-			if(!m_scaleRequests.isEmpty() && m_scaleRequests.first().type == ScaleRequest::Abort){
+			if(!m_scaleRequests.isEmpty() && m_scaleRequests.first().type == ScaleRequest::Abort) {
 				m_scaleRequests.removeFirst();
 				continue;
 			}
@@ -500,7 +497,7 @@ void Displayer::scaleThread()
 			m_renderer->adjustImage(image, req.brightness, req.contrast, req.invert);
 
 			m_scaleMutex.lock();
-			if(!m_scaleRequests.isEmpty() && m_scaleRequests.first().type == ScaleRequest::Abort){
+			if(!m_scaleRequests.isEmpty() && m_scaleRequests.first().type == ScaleRequest::Abort) {
 				m_scaleRequests.removeFirst();
 				continue;
 			}
@@ -513,16 +510,92 @@ void Displayer::scaleThread()
 	m_scaleMutex.unlock();
 }
 
-void Displayer::setScaledImage(const QImage &image, double scale)
-{
+void Displayer::setScaledImage(const QImage &image, double scale) {
 	m_scaleMutex.lock();
-	if(!m_scaleRequests.isEmpty() && m_scaleRequests.first().type == ScaleRequest::Abort){
+	if(!m_scaleRequests.isEmpty() && m_scaleRequests.first().type == ScaleRequest::Abort) {
 		m_scaleRequests.removeFirst();
-	}else{
+	} else {
 		m_imageItem->setPixmap(QPixmap::fromImage(image));
 		m_imageItem->setScale(1.f / scale);
 		m_imageItem->setTransformOriginPoint(m_imageItem->boundingRect().center());
 		m_imageItem->setPos(m_imageItem->pos() - m_imageItem->sceneBoundingRect().center());
 	}
 	m_scaleMutex.unlock();
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
+void DisplayerSelection::paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *widget) {
+	QColor c = QPalette().highlight().color();
+	setBrush(QColor(c.red(), c.green(), c.blue(), 63));
+	QPen pen;
+	pen.setColor(c);
+	pen.setWidth(1 / m_tool->getDisplayer()->getCurrentScale());
+	setPen(pen);
+
+	painter->setRenderHint(QPainter::Antialiasing, false);
+	QGraphicsRectItem::paint(painter, option, widget);
+	painter->setRenderHint(QPainter::Antialiasing, true);
+}
+
+void DisplayerSelection::hoverMoveEvent(QGraphicsSceneHoverEvent *event) {
+	QPointF p = event->pos();
+	QRectF r = rect();
+	double tol = 10.0 / m_tool->getDisplayer()->getCurrentScale();
+
+	bool left = qAbs(r.x() - p.x()) < tol;
+	bool right = qAbs(r.x() + r.width() - p.x()) < tol;
+	bool top = qAbs(r.y() - p.y()) < tol;
+	bool bottom = qAbs(r.y() + r.height() - p.y()) < tol;
+
+	if((top && left) || (bottom && right)) {
+		setCursor(Qt::SizeFDiagCursor);
+	} else if((top && right) || (bottom && left)) {
+		setCursor(Qt::SizeBDiagCursor);
+	} else if(top || bottom) {
+		setCursor(Qt::SizeVerCursor);
+	} else if(left || right) {
+		setCursor(Qt::SizeHorCursor);
+	} else {
+		unsetCursor();
+	}
+}
+
+void DisplayerSelection::mousePressEvent(QGraphicsSceneMouseEvent *event) {
+	QPointF p = event->pos();
+	double tol = 10.0 / m_tool->getDisplayer()->getCurrentScale();
+	m_resizeHandlers.clear();
+	m_resizeOffset = QPointF(0., 0.);
+	if(qAbs(m_point.x() - p.x()) < tol) { // pointx
+		m_resizeHandlers.append(resizePointX);
+		m_resizeOffset.setX(event->pos().x() - m_point.x());
+	} else if(qAbs(m_anchor.x() - p.x()) < tol) { // anchorx
+		m_resizeHandlers.append(resizeAnchorX);
+		m_resizeOffset.setX(event->pos().x() - m_anchor.x());
+	}
+	if(qAbs(m_point.y() - p.y()) < tol) { // pointy
+		m_resizeHandlers.append(resizePointY);
+		m_resizeOffset.setY(event->pos().y() - m_point.y());
+	} else if(qAbs(m_anchor.y() - p.y()) < tol) { // anchory
+		m_resizeHandlers.append(resizeAnchorY);
+		m_resizeOffset.setY(event->pos().y() - m_anchor.y());
+	}
+	event->accept();
+}
+
+void DisplayerSelection::mouseMoveEvent(QGraphicsSceneMouseEvent *event) {
+	QPointF p = event->pos() - m_resizeOffset;
+	QRectF bb = m_tool->getDisplayer()->getSceneBoundingRect();
+	p.rx() = qMin(qMax(bb.x(), p.x()), bb.x() + bb.width());
+	p.ry() = qMin(qMax(bb.y(), p.y()), bb.y() + bb.height());
+	if(!m_resizeHandlers.isEmpty()) {
+		for(const ResizeHandler& handler : m_resizeHandlers) {
+			handler(p, m_anchor, m_point);
+		}
+		setRect(QRectF(m_anchor, m_point).normalized());
+		emit geometryChanged(rect());
+		event->accept();
+	} else {
+		event->ignore();
+	}
 }

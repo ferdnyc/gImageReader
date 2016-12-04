@@ -1,7 +1,7 @@
 /* -*- Mode: C++; indent-tabs-mode: t; c-basic-offset: 4; tab-width: 4 -*-  */
 /*
  * Config.hh
- * Copyright (C) 2013-2014 Sandro Mani <manisandro@gmail.com>
+ * Copyright (C) 2013-2016 Sandro Mani <manisandro@gmail.com>
  *
  * gImageReader is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -37,16 +37,38 @@ public:
 	~Config();
 
 	void addSetting(AbstractSetting* setting) {
-		m_settings.insert(setting->key(), setting);
+		auto it = m_settings.find(setting->key());
+		if(it != m_settings.end()) {
+			delete it.value();
+			it.value() = setting;
+		} else {
+			m_settings.insert(setting->key(), setting);
+		}
 	}
 	template<class T>
-	T* getSetting(const QString& key) const{
+	T* getSetting(const QString& key) const {
 		auto it = m_settings.find(key);
 		return it == m_settings.end() ? nullptr : static_cast<T*>(it.value());
 	}
+	void removeSetting(const QString& key) {
+		auto it = m_settings.find(key);
+		if(it != m_settings.end()) {
+			delete it.value();
+			m_settings.erase(it);
+		}
+	}
 
 	bool searchLangSpec(Lang& lang) const;
+	QList<QString> searchLangCultures(const QString& code) const;
 	void showDialog();
+
+	bool useUtf8() const;
+	bool useSystemDataLocations() const;
+	QString tessdataLocation() const;
+	QString spellingLocation() const;
+
+	static void openTessdataDir();
+	static void openSpellingDir();
 
 public slots:
 	void disableDictInstall();
@@ -54,10 +76,13 @@ public slots:
 
 private:
 	static const QList<Lang> LANGUAGES;
+	static const QMultiMap<QString,QString> LANGUAGE_CULTURES;
 
 	Ui::ConfigDialog ui;
 	QFontDialog m_fontDialog;
 	QMap<QString, AbstractSetting*> m_settings;
+
+	static QMultiMap<QString,QString> buildLanguageCultureTable();
 
 
 private slots:
@@ -66,6 +91,7 @@ private slots:
 	void updateFontButton(const QFont& font);
 	void langTableSelectionChanged(const QItemSelection& selected, const QItemSelection& deselected);
 	void clearLineEditErrorState();
+	void setDataLocations(int idx);
 	void toggleAddLanguage(bool forceHide = false);
 };
 

@@ -1,7 +1,7 @@
 /* -*- Mode: C++; indent-tabs-mode: t; c-basic-offset: 4; tab-width: 4 -*-  */
 /*
- * OutputManager.hh
- * Copyright (C) 2013-2014 Sandro Mani <manisandro@gmail.com>
+ * OutputEditorText.hh
+ * Copyright (C) 2013-2016 Sandro Mani <manisandro@gmail.com>
  *
  * gImageReader is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -17,58 +17,66 @@
  * with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef OUTPUTMANAGER_HH
-#define OUTPUTMANAGER_HH
+#ifndef OUTPUTEDITORTEXT_HH
+#define OUTPUTEDITORTEXT_HH
 
 #include <QtSpell.hpp>
 
 #include "Config.hh"
 #include "MainWindow.hh"
+#include "OutputEditor.hh"
+#include "Ui_OutputEditorText.hh"
 
-class QDBusInterface;
-template <class T> class QDBusReply;
-class QDBusError;
 class SubstitutionsManager;
-class UI_MainWindow;
 
-class OutputManager : public QObject {
+class OutputEditorText : public OutputEditor {
 	Q_OBJECT
 public:
-	OutputManager(const UI_MainWindow& _ui);
-	~OutputManager();
-	void addText(const QString& text, bool insert = false);
-	bool getBufferModified() const;
+	OutputEditorText();
+	~OutputEditorText();
+
+	QWidget* getUI() override {
+		return m_widget;
+	}
+	ReadSessionData* initRead(tesseract::TessBaseAPI &/*tess*/) override {
+		return new TextReadSessionData;
+	}
+	void read(tesseract::TessBaseAPI& tess, ReadSessionData* data) override;
+	void readError(const QString& errorMsg, ReadSessionData* data) override;
+	bool getModified() const override;
 
 public slots:
-	bool clearBuffer();
-	bool saveBuffer(const QString& filename = "");
-	void setLanguage(const Config::Lang &lang, bool force = false);
+	void onVisibilityChanged(bool visible) override;
+	bool clear(bool hide = true) override;
+	bool save(const QString& filename = "") override;
+	void setLanguage(const Config::Lang &lang) override;
 
 private:
+	struct TextReadSessionData : ReadSessionData {
+		bool insertText = false;
+	};
+
 	enum class InsertMode { Append, Cursor, Replace };
 
-	QDBusInterface* m_dbusIface = nullptr;
-	const UI_MainWindow& ui;
+	QWidget* m_widget;
+	UI_OutputEditorText ui;
+
 	InsertMode m_insertMode;
 	QtSpell::TextEditChecker m_spell;
-	MainWindow::Notification m_notifierHandle = nullptr;
 	SubstitutionsManager* m_substitutionsManager;
 
 	void findReplace(bool backwards, bool replace);
 
 private slots:
+	void addText(const QString& text, bool insert);
 	void clearErrorState();
 	void filterBuffer();
 	void findNext();
 	void findPrev();
 	void replaceAll();
 	void replaceNext();
-	void scrollCursorIntoView();
 	void setFont();
 	void setInsertMode(QAction* action);
-	void dictionaryAutoinstall();
-	void dictionaryAutoinstallDone();
-	void dictionaryAutoinstallError(const QDBusError& error);
 };
 
-#endif // OUTPUTMANAGER_HH
+#endif // OUTPUTEDITORTEXT_HH

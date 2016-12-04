@@ -1,7 +1,7 @@
 /* -*- Mode: C++; indent-tabs-mode: t; c-basic-offset: 4; tab-width: 4 -*-  */
 /*
  * MainWindow.hh
- * Copyright (C) 2013-2014 Sandro Mani <manisandro@gmail.com>
+ * Copyright (C) 2013-2016 Sandro Mani <manisandro@gmail.com>
  *
  * gImageReader is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -25,6 +25,7 @@
 #include <QStack>
 #include <QStringList>
 #include <QThread>
+#include <QTimer>
 
 #include "common.hh"
 #include "Ui_MainWindow.hh"
@@ -34,10 +35,12 @@
 class Config;
 class Acquirer;
 class Displayer;
-class OutputManager;
+class DisplayerTool;
+class OutputEditor;
 class Recognizer;
 class SourceManager;
 class Source;
+class QProgressBar;
 
 class MainWindow : public QMainWindow {
 	Q_OBJECT
@@ -51,20 +54,42 @@ public:
 		bool close;
 	};
 
+	struct ProgressMonitor {
+		virtual ~ProgressMonitor() {}
+		virtual int getProgress() = 0;
+		virtual void cancel() = 0;
+	};
+
 	typedef void* Notification;
 
-	static MainWindow* getInstance(){ return s_instance; }
+	static MainWindow* getInstance() {
+		return s_instance;
+	}
+	static void signalHandler(int signal);
 
 	MainWindow(const QStringList& files);
 	~MainWindow();
 
-	Config* getConfig(){ return m_config; }
-	Displayer* getDisplayer(){ return m_displayer; }
-	OutputManager* getOutputManager(){ return m_outputManager; }
-	Recognizer* getRecognizer(){ return m_recognizer; }
-	SourceManager* getSourceManager(){ return m_sourceManager; }
+	Config* getConfig() {
+		return m_config;
+	}
+	Displayer* getDisplayer() {
+		return m_displayer;
+	}
+	OutputEditor* getOutputEditor() {
+		return m_outputEditor;
+	}
+	Recognizer* getRecognizer() {
+		return m_recognizer;
+	}
+	SourceManager* getSourceManager() {
+		return m_sourceManager;
+	}
 	void addNotification(const QString& title, const QString& message, const QList<NotificationAction>& actions, Notification* handle = nullptr);
 	void openFiles(const QStringList& files);
+	void setOutputPaneVisible(bool visible);
+	void showProgress(ProgressMonitor* monitor, int updateInterval = 500);
+	void hideProgress();
 
 public slots:
 	void popState();
@@ -73,6 +98,8 @@ public slots:
 	void hideNotification(Notification handle = nullptr);
 
 private:
+	friend class BusyEventFilter;
+
 	static MainWindow* s_instance;
 
 	UI_MainWindow ui;
@@ -80,7 +107,8 @@ private:
 	Config* m_config = nullptr;
 	Acquirer* m_acquirer = nullptr;
 	Displayer* m_displayer = nullptr;
-	OutputManager* m_outputManager = nullptr;
+	DisplayerTool* m_displayerTool = nullptr;
+	OutputEditor* m_outputEditor = nullptr;
 	Recognizer* m_recognizer = nullptr;
 	SourceManager* m_sourceManager = nullptr;
 
@@ -88,9 +116,20 @@ private:
 	QList<QWidget*> m_idleWidgets;
 	QStack<QPair<State, QString>> m_stateStack;
 
+	MainWindow::Notification m_notifierHandle = nullptr;
+
+	QWidget* m_progressWidget = nullptr;
+	QProgressBar* m_progressBar = nullptr;
+	QToolButton* m_progressCancelButton = nullptr;
+	QTimer m_progressTimer;
+	ProgressMonitor* m_progressMonitor = nullptr;
+
+
 	class VersionCheckThread : public QThread {
 	public:
-		const QString& getNewestVersion() const{ return m_newestVersion; }
+		const QString& getNewestVersion() const {
+			return m_newestVersion;
+		}
 	private:
 		QString m_newestVersion;
 		void run();
@@ -102,11 +141,16 @@ private:
 
 private slots:
 	void checkVersion();
-	void onSourceChanged(Source* source);
+	void onSourceChanged();
 	void showAbout();
 	void showConfig();
 	void openDownloadUrl();
 	void openChangeLogUrl();
+	void progressCancel();
+	void progressUpdate();
+	void setOCRMode(int idx);
+	void languageChanged();
+	void dictionaryAutoinstall();
 };
 
 Q_DECLARE_METATYPE(MainWindow::State)

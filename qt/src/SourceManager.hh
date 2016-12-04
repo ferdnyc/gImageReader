@@ -1,7 +1,7 @@
 /* -*- Mode: C++; indent-tabs-mode: t; c-basic-offset: 4; tab-width: 4 -*-  */
 /*
  * SourceManager.hh
- * Copyright (C) 2013-2014 Sandro Mani <manisandro@gmail.com>
+ * Copyright (C) 2013-2016 Sandro Mani <manisandro@gmail.com>
  *
  * gImageReader is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -39,7 +39,7 @@ struct Source {
 	int contrast = 0;
 	int resolution = -1;
 	int page = 1;
-	double angle = 0.;
+	QVector<double> angle;
 	bool invert = false;
 };
 
@@ -48,14 +48,17 @@ class SourceManager : public QObject {
 public:
 	SourceManager(const UI_MainWindow& _ui);
 	~SourceManager();
-	Source* getSelectedSource() const;
+	QList<Source*> getSelectedSources() const;
+	void addSourceImage(const QImage& image);
 
 public slots:
 	void addSources(const QStringList& files);
-	void addSource(const QString& file){ addSources(QStringList() << file); }
+	void addSource(const QString& file) {
+		addSources(QStringList() << file);
+	}
 
 signals:
-	void sourceChanged(Source* source);
+	void sourceChanged();
 
 private:
 	const UI_MainWindow& ui;
@@ -68,11 +71,14 @@ private:
 
 	void savePixmap(const QPixmap& pixmap, const QString& displayname);
 	void selectionChanged();
+	bool eventFilter(QObject* object, QEvent* event) override;
 
 private slots:
 	void clearSources();
 	void currentSourceChanged();
-	void deleteSource(){ removeSource(true); }
+	void deleteSource() {
+		removeSource(true);
+	}
 	void fileChanged(const QString& filename);
 	void openRecentItem();
 	void openSources();

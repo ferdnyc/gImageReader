@@ -1,66 +1,53 @@
 #ifndef UI_MAINWINDOW_HH
 #define UI_MAINWINDOW_HH
 
+#include "common.hh"
 #include "ui_MainWindow.h"
 #include <QDoubleSpinBox>
 #include <QMenu>
 #include <QWidgetAction>
 
-class UI_MainWindow : public Ui_MainWindow
-{
+class UI_MainWindow : public Ui_MainWindow {
 public:
 	QAction* actionAbout;
 	QAction* actionHelp;
-	QAction* actionOutputModeAppend;
-	QAction* actionOutputModeCursor;
-	QAction* actionOutputModeReplace;
-	QAction* actionOutputClear;
-	QAction* actionOutputRedo;
-	QAction* actionOutputReplace;
-	QAction* actionOutputSave;
-	QAction* actionOutputPostprocTitle1;
-	QAction* actionOutputPostprocKeepDot;
-	QAction* actionOutputPostprocKeepQuote;
-	QAction* actionOutputPostprocTitle2;
-	QAction* actionOutputPostprocJoinHyphen;
-	QAction* actionOutputPostprocCollapseSpaces;
-	QAction* actionOutputUndo;
 	QAction* actionPreferences;
 	QAction* actionRedetectLanguages;
+	QAction* actionRotateCurrentPage;
+	QAction* actionRotateAllPages;
 	QAction* actionSourceClear;
 	QAction* actionSourceDelete;
 	QAction* actionSourcePaste;
 	QAction* actionSourceRecent;
 	QAction* actionSourceRemove;
 	QAction* actionSourceScreenshot;
+	QComboBox* comboBoxOCRMode;
 	QDoubleSpinBox* spinBoxRotation;
 	QSpinBox* spinBoxPage;
 	QFrame* frameRotation;
 	QFrame* framePage;
-	QLabel* labelRotation;
-	QLabel* labelPage;
 	QMenu* menuAppMenu;
 	QMenu* menuAddSource;
 	QMenu* menuLanguages;
-	QMenu* menuOutputMode;
-	QMenu* menuOutputPostproc;
-	QToolBar* toolBarOutput;
+	QMenu* menuRotation;
 	QToolBar* toolBarSources;
+	QToolButton* toolButtonRotation;
 	QToolButton* toolButtonRecognize;
 	QToolButton* toolButtonAppMenu;
-	QToolButton* toolButtonOutputMode;
-	QToolButton* toolButtonOutputPostproc;
 	QToolButton* toolButtonSourceAdd;
 	QWidgetAction* actionRotate;
 	QWidgetAction* actionPage;
 
 
-	void setupUi(QMainWindow* MainWindow)
-	{
+	void setupUi(QMainWindow* MainWindow) {
 		Ui_MainWindow::setupUi(MainWindow);
 
 		// Do remaining things which are not possible in designer
 		toolBarMain->setContextMenuPolicy(Qt::PreventContextMenu);
+
+		// Remove & from some labels which designer insists in adding
+		dockWidgetSources->setWindowTitle(gettext("Sources"));
+		dockWidgetOutput->setWindowTitle(gettext("Output"));
 
 		// Hide image controls widget
 		widgetImageControls->setVisible(false);
@@ -75,9 +62,21 @@ public:
 		layoutRotation->setContentsMargins(1, 1, 1, 1);
 		layoutRotation->setSpacing(0);
 
-		labelRotation = new QLabel(MainWindow);
-		labelRotation->setPixmap(QPixmap(":/icons/angle"));
-		layoutRotation->addWidget(labelRotation);
+		actionRotateCurrentPage = new QAction(QIcon(":/icons/rotate_page"), gettext("Rotate current page"), MainWindow);
+		actionRotateAllPages = new QAction(QIcon(":/icons/rotate_pages"), gettext("Rotate all pages"), MainWindow);
+
+		menuRotation = new QMenu(MainWindow);
+		menuRotation->addAction(actionRotateCurrentPage);
+		menuRotation->addAction(actionRotateAllPages);
+
+		toolButtonRotation = new QToolButton(MainWindow);
+		toolButtonRotation->setIcon(QIcon(":/icons/rotate_pages"));
+		toolButtonRotation->setToolTip(gettext("Select rotation mode"));
+		toolButtonRotation->setPopupMode(QToolButton::InstantPopup);
+		toolButtonRotation->setAutoRaise(true);
+		toolButtonRotation->setMenu(menuRotation);
+
+		layoutRotation->addWidget(toolButtonRotation);
 
 		spinBoxRotation = new QDoubleSpinBox(MainWindow);
 		spinBoxRotation->setRange(0.0, 359.9);
@@ -85,6 +84,8 @@ public:
 		spinBoxRotation->setSingleStep(0.1);
 		spinBoxRotation->setWrapping(true);
 		spinBoxRotation->setFrame(false);
+		spinBoxRotation->setKeyboardTracking(false);
+		spinBoxRotation->setSizePolicy(spinBoxRotation->sizePolicy().horizontalPolicy(), QSizePolicy::MinimumExpanding);
 		layoutRotation->addWidget(spinBoxRotation);
 
 		actionRotate = new QWidgetAction(MainWindow);
@@ -102,13 +103,17 @@ public:
 		layoutPage->setContentsMargins(1, 1, 1, 1);
 		layoutPage->setSpacing(0);
 
-		labelPage = new QLabel(MainWindow);
-		labelPage->setPixmap(QPixmap(":/icons/page"));
-		layoutPage->addWidget(labelPage);
+		QToolButton* toolButtonPage = new QToolButton(MainWindow);
+		toolButtonPage->setIcon(QPixmap(":/icons/page"));
+		toolButtonPage->setEnabled(false);
+		toolButtonPage->setAutoRaise(true);
+		layoutPage->addWidget(toolButtonPage);
 
 		spinBoxPage = new QSpinBox(MainWindow);
 		spinBoxPage->setRange(1, 1);
 		spinBoxPage->setFrame(false);
+		spinBoxPage->setKeyboardTracking(false);
+		spinBoxPage->setSizePolicy(spinBoxPage->sizePolicy().horizontalPolicy(), QSizePolicy::MinimumExpanding);
 		layoutPage->addWidget(spinBoxPage);
 
 		actionPage = new QWidgetAction(MainWindow);
@@ -117,13 +122,32 @@ public:
 		toolBarMain->insertAction(actionImageControls, actionPage);
 		actionPage->setVisible(false);
 
-		// Recognizer button
+		QFont smallFont;
+		smallFont.setPointSizeF(smallFont.pointSizeF() * 0.9);
+
+		// OCR mode button
+		QWidget* ocrModeWidget = new QWidget();
+		ocrModeWidget->setLayout(new QVBoxLayout());
+		ocrModeWidget->layout()->setContentsMargins(0, 0, 0, 0);
+		ocrModeWidget->layout()->setSpacing(0);
+		QLabel* outputModeLabel = new QLabel(gettext("OCR mode:"));
+		outputModeLabel->setFont(smallFont);
+		ocrModeWidget->layout()->addWidget(outputModeLabel);
+		comboBoxOCRMode = new QComboBox();
+		comboBoxOCRMode->addItems(QStringList() << gettext("Plain text") << gettext("hOCR, PDF"));
+		comboBoxOCRMode->setFont(smallFont);
+		comboBoxOCRMode->setFrame(false);
+		comboBoxOCRMode->setCurrentIndex(-1);
+		ocrModeWidget->layout()->addWidget(comboBoxOCRMode);
+		toolBarMain->insertWidget(actionAutodetectLayout, ocrModeWidget);
+
+		actionAutodetectLayout->setVisible(false);
+
+		// Recognize button
 		toolButtonRecognize = new QToolButton(MainWindow);
 		toolButtonRecognize->setIcon(QIcon::fromTheme("insert-text"));
 		toolButtonRecognize->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-		QFont font;
-		font.setPointSizeF(font.pointSizeF() * 0.9);
-		toolButtonRecognize->setFont(font);
+		toolButtonRecognize->setFont(smallFont);
 		toolButtonRecognize->setPopupMode(QToolButton::MenuButtonPopup);
 		toolBarMain->insertWidget(actionToggleOutputPane, toolButtonRecognize);
 
@@ -196,79 +220,6 @@ public:
 		toolBarSources->addAction(actionSourceDelete);
 		toolBarSources->addAction(actionSourceClear);
 		static_cast<QVBoxLayout*>(tabSources->layout())->insertWidget(0, toolBarSources);
-
-		// Output insert mode
-		actionOutputModeAppend = new QAction(QIcon(":/icons/ins_append"), gettext("Append to current text"), MainWindow);
-		actionOutputModeCursor = new QAction(QIcon(":/icons/ins_cursor"), gettext("Insert at cursor"), MainWindow);
-		actionOutputModeReplace = new QAction(QIcon(":/icons/ins_replace"), gettext("Replace current text"), MainWindow);
-
-		menuOutputMode = new QMenu(MainWindow);
-		menuOutputMode->addAction(actionOutputModeAppend);
-		menuOutputMode->addAction(actionOutputModeCursor);
-		menuOutputMode->addAction(actionOutputModeReplace);
-
-		// Output postprocessing
-		actionOutputPostprocTitle1 = new QAction(gettext("Keep line break if..."), MainWindow);
-		actionOutputPostprocTitle1->setEnabled(false);
-		actionOutputPostprocKeepDot = new QAction(gettext("Preceded by dot"), MainWindow);
-		actionOutputPostprocKeepDot->setCheckable(true);
-		actionOutputPostprocKeepQuote = new QAction(gettext("Preceded or succeeded by quote"), MainWindow);
-		actionOutputPostprocKeepQuote->setCheckable(true);
-		actionOutputPostprocTitle2 = new QAction(gettext("Other options"), MainWindow);
-		actionOutputPostprocTitle2->setEnabled(false);
-		actionOutputPostprocJoinHyphen = new QAction(gettext("Join hyphenated words"), MainWindow);
-		actionOutputPostprocJoinHyphen->setCheckable(true);
-		actionOutputPostprocCollapseSpaces = new QAction(gettext("Collapse whitespace"), MainWindow);
-		actionOutputPostprocCollapseSpaces->setCheckable(true);
-
-		menuOutputPostproc = new QMenu(MainWindow);
-		menuOutputPostproc->addAction(actionOutputPostprocTitle1);
-		menuOutputPostproc->addAction(actionOutputPostprocKeepDot);
-		menuOutputPostproc->addAction(actionOutputPostprocKeepQuote);
-		menuOutputPostproc->addAction(actionOutputPostprocTitle2);
-		menuOutputPostproc->addAction(actionOutputPostprocJoinHyphen);
-		menuOutputPostproc->addAction(actionOutputPostprocCollapseSpaces);
-
-		// Output toolbar
-		toolButtonOutputMode = new QToolButton(MainWindow);
-		toolButtonOutputMode->setIcon(QIcon(":/icons/ins_append"));
-		toolButtonOutputMode->setToolTip(gettext("Select insert mode"));
-		toolButtonOutputMode->setPopupMode(QToolButton::InstantPopup);
-		toolButtonOutputMode->setMenu(menuOutputMode);
-
-		toolButtonOutputPostproc = new QToolButton(MainWindow);
-		toolButtonOutputPostproc->setIcon(QIcon(":/icons/stripcrlf"));
-		toolButtonOutputPostproc->setText(gettext("Strip Line Breaks"));
-		toolButtonOutputPostproc->setToolTip(gettext("Strip line breaks on selected text"));
-		toolButtonOutputPostproc->setPopupMode(QToolButton::MenuButtonPopup);
-		toolButtonOutputPostproc->setMenu(menuOutputPostproc);
-
-		actionOutputReplace = new QAction(QIcon::fromTheme("edit-find-replace"), gettext("Find and Replace"), MainWindow);
-		actionOutputReplace->setToolTip(gettext("Find and replace"));
-		actionOutputReplace->setCheckable(true);
-		actionOutputUndo = new QAction(QIcon::fromTheme("edit-undo"), gettext("Undo"), MainWindow);
-		actionOutputUndo->setToolTip(gettext("Undo"));
-		actionOutputUndo->setEnabled(false);
-		actionOutputRedo = new QAction(QIcon::fromTheme("edit-redo"), gettext("Redo"), MainWindow);
-		actionOutputRedo->setToolTip(gettext("Redo"));
-		actionOutputRedo->setEnabled(false);
-		actionOutputSave = new QAction(QIcon::fromTheme("document-save-as"), gettext("Save Output"), MainWindow);
-		actionOutputSave->setToolTip(gettext("Save output"));
-		actionOutputClear = new QAction(QIcon::fromTheme("edit-clear"), gettext("Clear Output"), MainWindow);
-		actionOutputClear->setToolTip(gettext("Clear output"));
-
-		toolBarOutput = new QToolBar(MainWindow);
-		toolBarOutput->setToolButtonStyle(Qt::ToolButtonIconOnly);
-		toolBarOutput->setIconSize(QSize(1, 1) * toolBarSources->style()->pixelMetric(QStyle::PM_SmallIconSize));
-		toolBarOutput->addWidget(toolButtonOutputMode);
-		toolBarOutput->addWidget(toolButtonOutputPostproc);
-		toolBarOutput->addAction(actionOutputReplace);
-		toolBarOutput->addAction(actionOutputUndo);
-		toolBarOutput->addAction(actionOutputRedo);
-		toolBarOutput->addAction(actionOutputSave);
-		toolBarOutput->addAction(actionOutputClear);
-
-		static_cast<QVBoxLayout*>(dockWidgetContentsOutput->layout()->layout())->insertWidget(0, toolBarOutput);
 	}
 };
 
